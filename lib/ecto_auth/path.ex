@@ -92,21 +92,41 @@ defmodule EctoAuth.Path do
     if is_nil(anchor_value) do
       where(query, false)
     else
-      # Remaining assocs (reversed) â JOINs from target schema back to anchor
+      # Remaining assocs (reversed) → JOINs from target schema back to anchor.
+      #
+      # ANCHORING: the first generated join must bind the FROM (binding 0) —
+      # never `[..., prev]`, which grabs whatever join the caller's query
+      # already carries and silently produces a nonsense ON clause (zero
+      # rows). Found in production by Influx's org picker, whose query
+      # pre-joins before the scope is applied. Subsequent path joins chain
+      # on the join we just added, where `[..., prev]` is correct. The final
+      # WHERE has the sibling rule: bind the last path join if we added any,
+      # else the FROM itself.
       join_assocs = Enum.reverse(join_assocs)
 
-      query =
-        Enum.reduce(join_assocs, query, fn assoc, q ->
+      {query, joined?} =
+        join_assocs
+        |> Enum.with_index()
+        |> Enum.reduce({query, false}, fn {assoc, idx}, {q, _} ->
           schema = assoc.owner
           ok = assoc.owner_key
           ark = assoc.related_key
 
-          join(q, :inner, [..., prev], j in ^schema,
-            on: field(j, ^ok) == field(prev, ^ark)
-          )
+          q =
+            if idx == 0 do
+              join(q, :inner, [o], j in ^schema, on: field(j, ^ok) == field(o, ^ark))
+            else
+              join(q, :inner, [..., prev], j in ^schema, on: field(j, ^ok) == field(prev, ^ark))
+            end
+
+          {q, true}
         end)
 
-      where(query, [..., last], field(last, ^rk) == ^anchor_value)
+      if joined? do
+        where(query, [..., last], field(last, ^rk) == ^anchor_value)
+      else
+        where(query, [o], field(o, ^rk) == ^anchor_value)
+      end
     end
   end
 
