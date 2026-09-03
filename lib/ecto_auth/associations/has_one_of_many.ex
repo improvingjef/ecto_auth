@@ -67,7 +67,7 @@ defmodule EctoAuth.Associations.HasOneOfMany do
   """
   defmacro has_one_of_many(name, queryable, opts \\ []) do
     quote do
-      Ecto.Association.Options.association(
+      Ecto.Schema.association(
         __MODULE__,
         :one,
         unquote(name),

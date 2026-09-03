@@ -5,6 +5,22 @@ defmodule EctoAuth.Associations.HasOneOfManyTest do
   alias EctoAuth.Test.Comment
   alias EctoAuth.Associations.HasOneOfMany
 
+  test "Ecto.Schema.association/5 is the extension point has_one_of_many registers through" do
+    # D0.3b (documentation/design/ecto-fork.html §B): the fork carried a copy
+    # of this function as Ecto.Association.Options.association/5. On stock
+    # Ecto it is Ecto.Schema.association/5, @doc false but stable across every
+    # 3.x release. If a future Ecto release renames or removes it, this pins
+    # the failure to a clear assertion here instead of a cryptic
+    # UndefinedFunctionError at compile time of every schema using
+    # has_one_of_many.
+    Code.ensure_loaded!(Ecto.Schema)
+
+    assert function_exported?(Ecto.Schema, :association, 5),
+           "Ecto.Schema.association/5 is gone or changed arity — " <>
+             "has_one_of_many/3 (lib/ecto_auth/associations/has_one_of_many.ex) " <>
+             "registers the association type through it and needs updating"
+  end
+
   test "association is defined on schema" do
     assoc = Post.__schema__(:association, :latest_comment)
     assert %HasOneOfMany{} = assoc

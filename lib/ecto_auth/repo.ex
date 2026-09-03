@@ -10,6 +10,7 @@ defmodule EctoAuth.Repo do
 
       defmodule MyApp.Repo do
         use Ecto.Repo, otp_app: :my_app, adapter: Ecto.Adapters.Postgres
+        use EctoAuth.Repo
 
         def prepare_query(op, query, opts) do
           EctoAuth.Repo.prepare_query(op, query, opts)
@@ -19,6 +20,15 @@ defmodule EctoAuth.Repo do
           EctoAuth.Repo.prepare_changeset(op, cs, opts)
         end
       end
+
+  `prepare_query/3` is a stock `Ecto.Repo` callback and needs no help.
+  `prepare_changeset/3` is not: stock Ecto has no write-side twin of
+  `prepare_query/3`, so `use EctoAuth.Repo` overrides the six
+  changeset-taking write functions (`insert/2`, `update/2`, `delete/2` and
+  their bang variants) to run `prepare_changeset/3` before calling through
+  to Ecto's own implementation. See "The write hook" in
+  `documentation/design/ecto-fork.html` for the full rationale and the
+  transparency table against the fork's version of this hook.
 
   ## Recursive join scoping
 
@@ -39,6 +49,74 @@ defmodule EctoAuth.Repo do
       Repo.all(Organization, skip_auth: true)
 
   """
+
+  @write_functions [insert: :insert, update: :update, delete: :delete,
+                     insert!: :insert, update!: :update, delete!: :delete]
+
+  @doc """
+  Gives a repo the write-side hook stock Ecto doesn't have.
+
+  Stock `Ecto.Repo` already calls `prepare_query/3` on every read; there is
+  no equivalent callback invoked before `insert/2`, `update/2`, `delete/2`
+  or their bang variants, and — unlike `prepare_query/3` and
+  `prepare_changeset/3` — Ecto does not mark those six as `defoverridable`,
+  so `use EctoAuth.Repo` does that itself via `Module.make_overridable/2`
+  before redefining them. Each override normalizes the argument to a
+  changeset, runs `prepare_changeset/3`, and calls through to Ecto's own
+  implementation with the result. A default
+  `prepare_changeset/3` that returns `{changeset, opts}` unchanged is
+  injected and is itself `defoverridable`, so a repo can define its own
+  (typically delegating to `EctoAuth.Repo.prepare_changeset/3`) the same way
+  it defines `prepare_query/3`.
+
+  Because nested association writes (`has_many`, `has_one`, `belongs_to`,
+  `many_to_many`) dispatch back through the owning repo module's own
+  `insert`/`update`/`delete`, they run through this same override — the
+  hook is not limited to the top-level call. `insert_all/3`,
+  `update_all/3` and `delete_all/2` take no changeset and are untouched;
+  guard them with `prepare_query/3` as today.
+  """
+  defmacro __using__(_opts) do
+    write_overrides =
+      for {fun, op} <- @write_functions do
+        quote do
+          # Arity 2 only: `use Ecto.Repo` already defines an arity-1 clause
+          # (from its own `opts \\ []` default) that calls straight through
+          # to arity 2 — since that call resolves to whatever arity-2
+          # definition is in effect when the module finishes compiling, it
+          # reaches this override without our needing (or being able, since
+          # it's not overridable) to redefine it.
+          def unquote(fun)(struct_or_changeset, opts) do
+            changeset =
+              struct_or_changeset
+              |> Ecto.Changeset.change()
+              |> Map.put(:repo, __MODULE__)
+
+            {changeset, opts} = prepare_changeset(unquote(op), changeset, opts)
+            super(changeset, opts)
+          end
+
+          defoverridable [{unquote(fun), 2}]
+        end
+      end
+
+    write_arities = for {fun, _op} <- @write_functions, do: {fun, 2}
+
+    quote do
+      @doc false
+      def prepare_changeset(_op, changeset, opts), do: {changeset, opts}
+      defoverridable prepare_changeset: 3
+
+      # `use Ecto.Repo`, expanded above this `use EctoAuth.Repo`, defines
+      # insert/2, update/2, delete/2 and their bang variants directly —
+      # unlike prepare_query/3 and prepare_changeset/3, Ecto does not mark
+      # them `defoverridable`. Do it ourselves so `super/2` below reaches
+      # Ecto's own implementation.
+      Module.make_overridable(__MODULE__, unquote(write_arities))
+
+      unquote(write_overrides)
+    end
+  end
 
   @doc """
   Applies authorization scopes to queries.

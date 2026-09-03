@@ -23,7 +23,7 @@ defmodule EctoAuth.MixProject do
 
   defp deps do
     [
-      {:ecto, github: "improvingjef/ecto", ref: "8b42a813d0b264b1f36c777821b76d9053d7d9b3"}
+      {:ecto, "~> 3.13"}
     ]
   end
 end
